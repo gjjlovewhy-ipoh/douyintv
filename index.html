@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多频道抖音直播聚合播放器</title>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box;font-family:system-ui,"Microsoft YaHei";}
+        body{background:#121212;color:#fff;padding:15px;}
+        .container{max-width:1200px;margin:0 auto;}
+        h2{text-align:center;color:#2196F3;margin-bottom:15px;}
+        /* 自定义接口栏 */
+        .api-setting{background:#1e1e1e;padding:12px;border-radius:8px;margin-bottom:15px;}
+        .api-setting label{display:block;margin-bottom:6px;color:#ccc;}
+        #customApi{width:100%;padding:10px;border-radius:6px;border:none;outline:none;font-size:15px;background:#2a2a2a;color:#fff;}
+        /* 输入解析栏 */
+        .input-box{display:flex;gap:10px;margin:15px 0;flex-wrap:wrap;}
+        #liveUrl{flex:1;padding:12px;border-radius:8px;border:none;outline:none;font-size:16px;min-width:200px;}
+        #parseBtn{padding:12px 20px;background:#2196F3;border:none;border-radius:8px;color:#fff;cursor:pointer;}
+        #parseBtn:hover{background:#1976D2;}
+        /* 画质选择 */
+        .control-bar{display:flex;align-items:center;gap:15px;margin-bottom:15px;flex-wrap:wrap;}
+        #quality{padding:8px;border-radius:6px;border:none;outline:none;background:#2a2a2a;color:#fff;}
+        /* 频道列表菜单 */
+        .channel-menu{display:flex;flex-wrap:wrap;gap:8px;margin:15px 0;}
+        .channel-item{padding:8px 15px;background:#2a2a2a;border-radius:6px;cursor:pointer;border:1px solid #444;user-select:none;}
+        .channel-item.active{background:#2196F3;border-color:#2196F3;}
+        .channel-item:hover{background:#333;}
+        /* 直播间信息 */
+        .room-info{background:#1e1e1e;padding:12px;border-radius:8px;margin-bottom:15px;}
+        /* 播放器 */
+        .video-box{width:100%;background:#000;border-radius:10px;overflow:hidden;}
+        video{width:100%;display:block;background:#000;}
+        #status{margin-top:15px;padding:10px;background:#1e1e1e;border-radius:6px;font-size:14px;color:#ccc;}
+        .success{color:#4cd964;}
+        .error{color:#ff5252;}
+        .loading{color:#ffcc00;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>多频道直播聚合播放器</h2>
+
+        <!-- 自定义接口输入 -->
+        <div class="api-setting">
+            <label>自定义解析接口（可自行更换）：</label>
+            <input type="text" id="customApi" placeholder="接口地址末尾带=" value="http://www.ffapi.cn/int/v1/douyinlive?id=">
+        </div>
+
+        <!-- 手动解析输入 -->
+        <div class="input-box">
+            <input type="text" id="liveUrl" placeholder="粘贴直播间链接/ID 手动解析">
+            <button id="parseBtn">手动解析</button>
+        </div>
+
+        <!-- 画质选择 -->
+        <div class="control-bar">
+            <span>选择画质：</span>
+            <select id="quality">
+                <option value="FULL_HD1">默认-超清 FULL_HD1</option>
+                <option value="HD1">高清 HD1</option>
+                <option value="SD1">标清 SD1</option>
+                <option value="SD2">流畅 SD2</option>
+            </select>
+        </div>
+
+        <!-- 频道菜单列表 -->
+        <div class="channel-menu" id="channelMenu"></div>
+
+        <!-- 直播间信息 -->
+        <div class="room-info" id="roomInfo" style="display:none;">
+            <h4>当前频道：<span id="roomTitle"></span></h4>
+        </div>
+
+        <!-- 播放器 -->
+        <div class="video-box">
+            <video id="livePlayer" controls autoplay muted playsinline></video>
+        </div>
+
+        <div id="status">页面初始化，自动加载内置频道中...</div>
+    </div>
+
+    <script>
+        // 内置默认直播间ID列表
+        const DEFAULT_ID_LIST = [
+            "CMG_yangshipin",
+            "1606137427",
+            "kuaikancctv",
+            "nuanxinnengl",
+            "letus17",
+            "cctv6media.",
+            "cctv.com"
+        ];
+
+        // 全局变量
+        let channelData = {};
+        let currentPlayId = "";
+
+        const customApiEl = document.getElementById('customApi');
+        const urlInput = document.getElementById('liveUrl');
+        const parseBtn = document.getElementById('parseBtn');
+        const player = document.getElementById('livePlayer');
+        const statusDom = document.getElementById('status');
+        const qualitySel = document.getElementById('quality');
+        const channelMenu = document.getElementById('channelMenu');
+        const roomInfo = document.getElementById('roomInfo');
+        const roomTitle = document.getElementById('roomTitle');
+
+        // 获取当前接口
+        function getApiUrl(){
+            return customApiEl.value.trim();
+        }
+
+        // 补全https协议
+        function fixUrl(url){
+            if(!url) return '';
+            if(url.startsWith('//')) return 'https:' + url;
+            return url;
+        }
+
+        // 状态提示
+        function setStatus(txt, type=''){
+            statusDom.className = type;
+            statusDom.innerText = txt;
+        }
+
+        // 提取直播间ID
+        function getRoomIdFromUrl(text){
+            text = text.trim();
+            let idReg = /live\.douyin\.com\/(\d+)/;
+            let match = text.match(idReg);
+            if(match) return match[1];
+            if(/^\d+$/.test(text)) return text;
+            return text;
+        }
+
+        // 播放流 + 卡顿自动降级
+        function playAutoSwitch(id, urls){
+            currentPlayId = id;
+            let firstUrl = fixUrl(urls.FULL_HD1 || urls.HD1 || urls.SD1 || urls.SD2);
+            if(!firstUrl){
+                setStatus('暂无可用播放源', 'error');
+                return;
+            }
+            player.src = firstUrl;
+            player.load();
+
+            let timer = setTimeout(() => {
+                if(urls.HD1 && firstUrl !== fixUrl(urls.HD1)){
+                    setStatus('超清加载缓慢，自动切换高清线路', 'loading');
+                    player.src = fixUrl(urls.HD1);
+                    player.load();
+                }
+            }, 3000);
+
+            player.oncanplay = () => clearTimeout(timer);
+        }
+
+        // 解析单个频道
+        async function parseSingleId(roomId){
+            const api = getApiUrl();
+            if(!api) {
+                setStatus('请填写有效解析接口', 'error');
+                return null;
+            }
+            try {
+                let res = await fetch(api + encodeURIComponent(roomId));
+                let data = await res.json();
+                if(data.code !== 200) return null;
+
+                channelData[roomId] = {
+                    title: data.title || roomId,
+                    urls: data.urls
+                };
+                return data;
+            } catch (e) {
+                console.log(roomId + " 解析失败", e);
+                return null;
+            }
+        }
+
+        // 批量解析所有内置ID
+        async function parseAllDefault(){
+            setStatus('正在批量解析内置频道，请稍候...', 'loading');
+            for(let id of DEFAULT_ID_LIST){
+                let res = await parseSingleId(id);
+                if(res){
+                    renderChannelItem(id);
+                }
+            }
+            setStatus('内置频道加载完成，点击下方频道切换播放', 'success');
+        }
+
+        // 渲染频道菜单按钮
+        function renderChannelItem(id){
+            if(document.querySelector(`.channel-item[data-id="${id}"]`)) return;
+            let info = channelData[id];
+            if(!info) return;
+            let item = document.createElement('div');
+            item.className = 'channel-item';
+            item.dataset.id = id;
+            item.innerText = info.title;
+            item.onclick = () => {
+                document.querySelectorAll('.channel-item').forEach(el=>el.classList.remove('active'));
+                item.classList.add('active');
+                roomTitle.innerText = info.title;
+                roomInfo.style.display = 'block';
+                playAutoSwitch(id, info.urls);
+            };
+            channelMenu.appendChild(item);
+        }
+
+        // 手动解析
+        async function parseLive(inputVal){
+            let roomId = getRoomIdFromUrl(inputVal);
+            if(!roomId){
+                setStatus('未识别到有效直播间ID/链接', 'error');
+                return;
+            }
+            let data = await parseSingleId(roomId);
+            if(!data){
+                setStatus('该频道解析失败', 'error');
+                return;
+            }
+            roomTitle.innerText = data.title;
+            roomInfo.style.display = 'block';
+            renderChannelItem(roomId);
+            playAutoSwitch(roomId, data.urls);
+        }
+
+        // 画质手动切换
+        qualitySel.addEventListener('change', function(){
+            if(!currentPlayId || !channelData[currentPlayId]) return;
+            let key = this.value;
+            let url = channelData[currentPlayId].urls[key];
+            if(!url) return;
+            player.src = fixUrl(url);
+            player.load();
+        });
+
+        // 粘贴自动解析
+        urlInput.addEventListener('paste', ()=>{
+            setTimeout(()=>parseLive(urlInput.value), 120);
+        });
+
+        // 按钮点击
+        parseBtn.onclick = ()=> parseLive(urlInput.value.trim());
+
+        // 页面加载自动批量解析
+        window.onload = ()=>{
+            parseAllDefault();
+        };
+    </script>
+</body>
+</html>
